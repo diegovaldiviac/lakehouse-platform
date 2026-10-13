@@ -1,0 +1,39 @@
+# Copiar fuera del repo como registries.yaml, completar y pasarlo a install-k3s.sh.
+# Después de cambiarlo en un k3s ya instalado: sudo systemctl restart k3s
+
+# Login de Docker Hub, para no depender del límite anónimo por IP compartida.
+# k3s usa registry-1.docker.io como endpoint de docker.io; las dos claves cubren ambos nombres.
+configs:
+  "docker.io":
+    auth:
+      username: "<usuario-docker-hub>"
+      password: "<token-de-acceso>"
+  "registry-1.docker.io":
+    auth:
+      username: "<usuario-docker-hub>"
+      password: "<token-de-acceso>"
+
+# Con un registro interno con proxy-cache (Harbor u otro), cada registro público se redirige
+# ahí sin tocar los nombres de imagen. Si el espejo no tiene la imagen, k3s cae al registro original.
+#
+# mirrors:
+#   docker.io:
+#     endpoint:
+#       - "https://<registro-interno>"
+#     rewrite:
+#       "^(.*)$": "<proyecto-proxy-docker-hub>/$1"
+#   quay.io:
+#     endpoint:
+#       - "https://<registro-interno>"
+#     rewrite:
+#       "^(.*)$": "<proyecto-proxy-quay>/$1"
+#   ghcr.io:
+#     endpoint:
+#       - "https://<registro-interno>"
+#     rewrite:
+#       "^(.*)$": "<proyecto-proxy-ghcr>/$1"
+# configs:
+#   "<registro-interno>":
+#     auth:
+#       username: "<cuenta-robot-de-lectura>"
+#       password: "<token>"

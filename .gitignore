@@ -1,0 +1,11 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+registries.yaml
+
+# Entornos reales y su bitácora quedan fuera; solo se versiona la plantilla.
+terraform/envs/*
+!terraform/envs/example/
+ESTADO.md
