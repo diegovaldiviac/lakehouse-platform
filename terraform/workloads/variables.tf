@@ -40,3 +40,13 @@ variable "catalog_db_size" {
   description = "Tamaño del volumen de Postgres del catálogo."
   type        = string
 }
+
+variable "spark_image" {
+  description = "Imagen de images/spark, referenciada por digest."
+  type        = string
+
+  validation {
+    condition     = can(regex("@sha256:[0-9a-f]{64}$", var.spark_image))
+    error_message = "La imagen va con digest: <repositorio>@sha256:<hash>."
+  }
+}

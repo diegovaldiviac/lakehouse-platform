@@ -1,11 +1,13 @@
-"""Etapa 1: identidades de SeaweedFS por consumidor, credenciales temporales por STS, warehouse en Lakekeeper
-y respaldos del catálogo."""
+"""Etapa 1: identidades de SeaweedFS por consumidor, credenciales temporales por STS, warehouse en Lakekeeper,
+Spark escribiendo Iceberg sin claves fijas y respaldos del catálogo."""
 
 import base64
 import json
 import time
+import urllib.error
 import urllib.request
 import uuid
+from pathlib import Path
 from urllib.parse import urlparse
 
 import boto3
@@ -173,6 +175,82 @@ def test_lakekeeper_entrega_credenciales_acotadas_a_la_tabla(s3_endpoint, wareho
     s3.put_object(Bucket=warehouse, Key=f"{root}/data/f", Body=b"x")
     assert s3.get_object(Bucket=warehouse, Key=f"{root}/data/f")["Body"].read() == b"x"
     assert_denied(lambda: s3.put_object(Bucket=warehouse, Key=f"otra-{uuid.uuid4().hex[:8]}/f", Body=b"x"))
+
+
+COMPUTE_NS = "lakehouse-compute"
+
+
+def catalog_prefix(admin_api):
+    config = admin_api("GET", f"/catalog/v1/config?warehouse={WAREHOUSE}")
+    return {**config["defaults"], **config["overrides"]}["prefix"]
+
+
+@pytest.fixture(scope="module")
+def spark_lakehouse():
+    """Imagen, catálogo y configuración de Spark que publica Terraform en lakehouse-compute."""
+    data = kubectl_json("get", "configmap", "spark-lakehouse", "-n", COMPUTE_NS)["data"]
+    return {**data, "spark-conf": json.loads(data["spark-conf.json"])}
+
+
+@pytest.fixture
+def spark_table(admin_api, spark_lakehouse):
+    """Corre tests/spark/crear_tabla.py como SparkApplication y entrega el namespace de Iceberg que crea.
+    Al terminar borra el job, su script y la tabla."""
+    name = f"crear-tabla-{uuid.uuid4().hex[:8]}"
+    namespace = name.replace("-", "_")
+    script = (Path(__file__).parent / "spark" / "crear_tabla.py").read_text(encoding="utf-8")
+    script_cm = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": name, "namespace": COMPUTE_NS},
+                 "data": {"crear_tabla.py": script}}
+    app = {
+        "apiVersion": "sparkoperator.k8s.io/v1beta2", "kind": "SparkApplication",
+        "metadata": {"name": name, "namespace": COMPUTE_NS},
+        "spec": {
+            "type": "Python", "mode": "cluster", "sparkVersion": "4.1.3",
+            "image": spark_lakehouse["image"],
+            "mainApplicationFile": "local:///opt/job/crear_tabla.py",
+            "arguments": [spark_lakehouse["catalog"], namespace],
+            "sparkConf": spark_lakehouse["spark-conf"],
+            "restartPolicy": {"type": "Never"},
+            "volumes": [{"name": "job", "configMap": {"name": name}}],
+            "driver": {"cores": 1, "coreLimit": "1", "memory": "1g",
+                       "serviceAccount": spark_lakehouse["service-account"],
+                       "volumeMounts": [{"name": "job", "mountPath": "/opt/job"}]},
+            "executor": {"instances": 1, "cores": 1, "coreLimit": "1", "memory": "1g"},
+        },
+    }
+    kubectl("apply", "-f", "-", input=json.dumps(script_cm))
+    kubectl("apply", "-f", "-", input=json.dumps(app))
+    try:
+        deadline = time.monotonic() + 600
+        while (state := kubectl_json("get", "sparkapplication", name, "-n", COMPUTE_NS)
+               .get("status", {}).get("applicationState", {}).get("state")) not in ("COMPLETED", "FAILED"):
+            assert time.monotonic() < deadline, f"{name} no terminó en 10 minutos (estado {state})"
+            time.sleep(5)
+        if state == "FAILED":
+            log = kubectl("logs", f"{name}-driver", "-n", COMPUTE_NS).splitlines()
+            errors = [line for line in log if "Exception" in line or "Error" in line]
+            pytest.fail(f"{name} falló:\n" + "\n".join(errors[:20]))
+        yield namespace
+    finally:
+        kubectl("delete", "sparkapplication", name, "-n", COMPUTE_NS, "--ignore-not-found")
+        kubectl("delete", "configmap", name, "-n", COMPUTE_NS, "--ignore-not-found")
+        base = f"/catalog/v1/{catalog_prefix(admin_api)}/namespaces/{namespace}"
+        for path in (f"{base}/tables/t?purgeRequested=true", base):
+            try:
+                admin_api("DELETE", path)
+            except urllib.error.HTTPError as error:
+                if error.code != 404:
+                    raise
+
+
+def test_spark_crea_tabla_iceberg_sin_claves_fijas(admin_api, spark_lakehouse, spark_table):
+    conf = json.dumps(spark_lakehouse["spark-conf"]).lower()
+    assert not any(word in conf for word in ("access-key", "secret", "token"))
+
+    table = admin_api("GET", f"/catalog/v1/{catalog_prefix(admin_api)}/namespaces/{spark_table}/tables/t")
+    metadata = table["metadata"]
+    snapshot = next(s for s in metadata["snapshots"] if s["snapshot-id"] == metadata["current-snapshot-id"])
+    assert snapshot["summary"]["total-records"] == "3"
 
 
 CATALOG_NS = "lakehouse-catalog"
