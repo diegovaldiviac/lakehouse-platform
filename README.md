@@ -7,11 +7,12 @@ Infraestructura como código de un lakehouse sobre Kubernetes. Arranca en un nod
 | Carpeta | Qué contiene |
 |---|---|
 | `host/` | Instalación de k3s en el servidor (requiere `sudo`), descarga del kubeconfig y plantilla de `registries.yaml` |
-| `terraform/platform/` | Base del cluster: namespaces, operadores (Strimzi, Spark Operator, CloudNativePG) y object store (SeaweedFS) |
-| `terraform/workloads/` | Postgres del catálogo (CloudNativePG), Lakekeeper y OpenFGA; después Keycloak, Trino con OPA, Kafka + Debezium, Airflow, OpenMetadata |
+| `terraform/platform/` | Base del cluster: namespaces, operadores (Strimzi, Spark Operator, CloudNativePG con el plugin barman-cloud, cert-manager) y object store (SeaweedFS) |
+| `terraform/workloads/` | Postgres del catálogo (CloudNativePG) con sus respaldos, Lakekeeper y OpenFGA; después Keycloak, Trino con OPA, Kafka + Debezium, Airflow, OpenMetadata |
 | `terraform/envs/<entorno>/` | Variables y estado por entorno. Solo `example/` se versiona |
+| `images/spark/` | Imagen de Spark con Iceberg y OpenLineage, que construye `.github/workflows/spark-image.yml` |
 
-`platform` y `workloads` se aplican por separado: los recursos de `workloads` usan tipos (`Kafka`, `Cluster`, `SparkApplication`) que solo existen después de instalar los operadores.
+`platform` y `workloads` se aplican por separado: los recursos de `workloads` usan tipos (`Kafka`, `Cluster`, `ObjectStore`, `SparkApplication`) que solo existen después de instalar los operadores, y Secrets que crea `platform`. Por eso el `plan` de `workloads` se hace después de aplicar `platform`.
 
 ## Namespaces
 
@@ -96,6 +97,28 @@ terraform apply -var-file ../envs/<entorno>/workloads.tfvars
 
 `-reconfigure` hace que cada `init` apunte al estado del entorno indicado; sin él, Terraform intentaría migrar el estado del entorno anterior al nuevo.
 
+### 6. Tests
+
+Suite pytest contra el cluster real, un archivo por etapa. Necesita `uv` y `kubectl`:
+
+```bash
+cd tests
+LAKEHOUSE_ENV=<entorno> uv run pytest
+```
+
+Usa `~/.kube/config-<entorno>` (o `LAKEHOUSE_KUBECONFIG`) y el `kubectl` del PATH (o `KUBECTL`). Las pruebas de red levantan un pod temporal de `busybox` en `lakehouse-compute`.
+
+La prueba de restauración queda fuera de la corrida normal porque tarda unos minutos: `uv run pytest -m restauracion`. Escribe una fila en la base `postgres` de `catalog-db`, espera a que su WAL se archive, recupera un cluster temporal `catalog-db-restore-test` desde el bucket de respaldos, comprueba la fila y el warehouse, y borra el cluster con su volumen.
+
+## Recursos y red
+
+- Cada namespace tiene una `ResourceQuota` (`namespace_quotas` en `platform.tfvars`; la de `lakehouse-compute` es el tope de Spark) y un `LimitRange` que da requests y límite de memoria por defecto a los contenedores que no los declaran.
+- El catálogo (Postgres, Lakekeeper, OpenFGA) corre con QoS Guaranteed.
+- SeaweedFS tiene una identidad por consumidor: `admin` para operación, y `lakekeeper` y `trino` acotadas al bucket `warehouse`, con sus claves en el Secret `s3-<consumidor>` de su namespace. Solo `lakekeeper` puede asumir el rol `lakekeeper-vended` por STS, y SeaweedFS respeta la política de sesión con que Lakekeeper acota cada credencial temporal a una tabla.
+- Los buckets los crea el Job `seaweedfs-buckets` con la identidad `admin`. El Job `lakekeeper-bootstrap` hace el bootstrap de Lakekeeper con la cuenta de servicio `lakehouse-admin` de `lakehouse-catalog`, que queda como administradora (rol `operator`), y crea el warehouse `lakehouse` con credenciales temporales por STS. Quien pueda crear pods con esa cuenta administra el catálogo.
+- `catalog-db` archiva su WAL de forma continua y hace un respaldo base diario en el bucket `catalog-backups`, con la identidad `catalog-backup` y retención de 14 días. En un solo nodo el bucket está en el mismo disco: cubre errores humanos y de software, no la pérdida del disco.
+- En `lakehouse-catalog` la entrada está denegada por defecto: Lakekeeper (8181) recibe de los namespaces del lakehouse; OpenFGA solo de Lakekeeper; Postgres de Lakekeeper, OpenFGA y el operador de CloudNativePG.
+
 ## Estado de Terraform
 
 Hay un estado por módulo y por entorno, por defecto local en `terraform/envs/<entorno>/<módulo>.tfstate`. Contiene claves S3, las contraseñas de Postgres y la llave de cifrado de Lakekeeper en texto plano: no se versiona ni se comparte. Para un backend remoto se cambia el bloque `backend` de los dos `versions.tf`, los `.backend.hcl` del entorno pasan a tener la dirección del estado, y se migra con `terraform init -migrate-state`.
@@ -104,4 +127,6 @@ Hay un estado por módulo y por entorno, por defecto local en `terraform/envs/<e
 
 Las imágenes se descargan de los registros públicos, con versión fija. Para descargarlas desde un registro interno basta un `registries.yaml` con espejos, sin tocar los nombres de imagen.
 
-Los charts de Helm se bajan como `.tgz` desde GitHub Releases, con la versión en la URL. Si la red no llega a GitHub, `chart_overrides` en los `.tfvars` apunta cada chart a un espejo o a una ruta local (ver `envs/example/`).
+La imagen de Spark es propia: la oficial `apache/spark` más los jars de Iceberg (runtime y bundle de AWS) y OpenLineage, cada uno verificado con un SHA-256 fijo en el Dockerfile. GitHub Actions la construye en cada cambio de `images/spark/` en `main` y la publica en `ghcr.io/<owner>/<repo>/spark`, con el tag `sha-<commit>`; en un pull request solo la construye. Terraform la referencia por digest. El paquete de ghcr.io nace privado aunque el repo sea público: hay que dejarlo público una vez en su configuración o darle a k3s credenciales de lectura en `registries.yaml`. Para construirla desde un registro y un espejo de Maven internos están los argumentos `BASE_IMAGE` y `MAVEN_REPO`.
+
+Los charts de Helm se bajan como `.tgz` desde GitHub Releases (cert-manager desde `charts.jetstack.io`), con la versión en la URL. Si la red no llega a esos sitios, `chart_overrides` en los `.tfvars` apunta cada chart a un espejo o a una ruta local (ver `envs/example/`).

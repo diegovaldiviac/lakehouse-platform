@@ -60,6 +60,11 @@ resource "kubernetes_manifest" "catalog_db" {
     }
     spec = {
       instances = 1
+      # requests = limits: QoS Guaranteed, lo último que se desaloja.
+      resources = {
+        requests = { cpu = "500m", memory = "1Gi" }
+        limits   = { cpu = "500m", memory = "1Gi" }
+      }
       storage = {
         size         = var.catalog_db_size
         storageClass = var.storage_class
@@ -82,6 +87,12 @@ resource "kubernetes_manifest" "catalog_db" {
           passwordSecret = { name = kubernetes_secret_v1.openfga_db_credentials.metadata[0].name }
         }]
       }
+      # Archiva el WAL al ObjectStore de catalog-backups.tf.
+      plugins = [{
+        name          = "barman-cloud.cloudnative-pg.io"
+        isWALArchiver = true
+        parameters    = { barmanObjectName = local.backup_store }
+      }]
     }
   }
 
@@ -94,7 +105,10 @@ resource "kubernetes_manifest" "catalog_db" {
 
   timeouts {
     create = "10m"
+    update = "10m"
   }
+
+  depends_on = [kubernetes_manifest.catalog_backup_store]
 }
 
 resource "kubernetes_manifest" "openfga_database" {

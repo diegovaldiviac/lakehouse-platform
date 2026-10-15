@@ -3,6 +3,12 @@ locals {
   lakekeeper_chart = lookup(var.chart_overrides, "lakekeeper", "https://github.com/lakekeeper/lakekeeper-charts/releases/download/lakekeeper-0.12.0/lakekeeper-0.12.0.tgz")
   lakekeeper_image = "v0.13.3@sha256:db2ba6168eb107f22242fb7f2edc4016fa35e57bdcc606894e809c418e32e8dc"
   openfga_image    = "v1.18.1@sha256:efde89d24487da1a8bc37d85b61341f1fb7024943a1ded65f4b7d51a75666688"
+
+  # requests = limits en todos los contenedores, también los init: QoS Guaranteed.
+  guaranteed = {
+    small  = { requests = { cpu = "100m", memory = "128Mi" }, limits = { cpu = "100m", memory = "128Mi" } }
+    server = { requests = { cpu = "500m", memory = "512Mi" }, limits = { cpu = "500m", memory = "512Mi" } }
+  }
 }
 
 # Cifra los secretos de almacenamiento que Lakekeeper guarda en Postgres; perderla deja esos secretos ilegibles.
@@ -44,7 +50,10 @@ resource "helm_release" "lakekeeper" {
     helmWait = true
 
     catalog = {
-      image = { tag = local.lakekeeper_image }
+      image          = { tag = local.lakekeeper_image }
+      resources      = local.guaranteed.server
+      initContainers = { checkDb = { resources = local.guaranteed.small } }
+      dbMigrations   = { resources = { requests = { cpu = "250m", memory = "256Mi" }, limits = { memory = "256Mi" } } }
     }
 
     postgresql = { enabled = false }
@@ -91,8 +100,10 @@ resource "helm_release" "lakekeeper" {
         engine        = "postgres"
         uriSecret     = kubernetes_secret_v1.openfga_datastore.metadata[0].name
         migrationType = "initContainer"
+        migrations    = { resources = local.guaranteed.small }
       }
       postgresql = { enabled = false }
+      resources  = local.guaranteed.server
     }
   })]
 

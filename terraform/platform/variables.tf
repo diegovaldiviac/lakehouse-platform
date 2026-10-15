@@ -21,14 +21,24 @@ variable "kube_context" {
 }
 
 variable "chart_overrides" {
-  description = "URL o ruta local de un .tgz que reemplaza al chart por defecto (espejo interno, red sin GitHub). Claves: strimzi, spark_operator, cloudnative_pg."
+  description = "URL o ruta local de un .tgz que reemplaza al chart por defecto (espejo interno, red sin GitHub). Claves: strimzi, spark_operator, cloudnative_pg, barman_cloud, cert_manager."
   type        = map(string)
   default     = {}
 
   validation {
-    condition     = alltrue([for k in keys(var.chart_overrides) : contains(["strimzi", "spark_operator", "cloudnative_pg"], k)])
-    error_message = "Claves válidas: strimzi, spark_operator, cloudnative_pg."
+    condition = alltrue([for k in keys(var.chart_overrides) : contains(
+      ["strimzi", "spark_operator", "cloudnative_pg", "barman_cloud", "cert_manager"], k
+    )])
+    error_message = "Claves válidas: strimzi, spark_operator, cloudnative_pg, barman_cloud, cert_manager."
   }
+}
+
+variable "namespace_quotas" {
+  description = "Tope por namespace (claves: operators, storage, ingest, catalog, compute, query). La cuota de compute es el tope de los ejecutores de Spark."
+  type = map(object({
+    cpu    = string
+    memory = string
+  }))
 }
 
 variable "storage_class" {

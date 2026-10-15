@@ -4,6 +4,9 @@
 *.tfplan
 crash.log
 registries.yaml
+.venv/
+__pycache__/
+.pytest_cache/
 
 # Entornos reales y su bitácora quedan fuera; solo se versiona la plantilla.
 terraform/envs/*

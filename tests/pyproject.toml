@@ -1,0 +1,17 @@
+[project]
+name = "lakehouse-platform-tests"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.35",
+    "pytest>=8.3",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+addopts = "-ra -m 'not restauracion'"
+markers = [
+    "restauracion: restaura catalog-db en un cluster temporal; tarda minutos (uv run pytest -m restauracion)",
+]
