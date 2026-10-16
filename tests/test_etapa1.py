@@ -44,8 +44,8 @@ def lakekeeper():
 
 
 @pytest.fixture(scope="module")
-def trino():
-    return consumer_secret("trino", "lakehouse-query")
+def catalog_backup():
+    return consumer_secret("catalog-backup", "lakehouse-catalog")
 
 
 @pytest.fixture(scope="module")
@@ -80,19 +80,17 @@ def prefix(admin_s3, warehouse):
         admin_s3.delete_object(Bucket=warehouse, Key=obj["Key"])
 
 
-@pytest.mark.parametrize("consumer", ["lakekeeper", "trino"])
-def test_identidad_acotada_al_warehouse(request, s3_endpoint, warehouse, other_bucket, prefix, consumer):
-    creds = request.getfixturevalue(consumer)
-    s3 = client("s3", s3_endpoint, creds["access-key"], creds["secret-key"])
+def test_identidad_acotada_al_warehouse(s3_endpoint, lakekeeper, warehouse, other_bucket, prefix):
+    s3 = client("s3", s3_endpoint, lakekeeper["access-key"], lakekeeper["secret-key"])
     s3.put_object(Bucket=warehouse, Key=f"{prefix}/a", Body=b"x")
     assert s3.get_object(Bucket=warehouse, Key=f"{prefix}/a")["Body"].read() == b"x"
     assert_denied(lambda: s3.put_object(Bucket=other_bucket, Key="a", Body=b"x"))
     assert_denied(lambda: s3.create_bucket(Bucket=f"test-{uuid.uuid4().hex[:8]}"))
 
 
-def test_solo_lakekeeper_asume_el_rol(s3_endpoint, lakekeeper, trino):
-    sts = client("sts", s3_endpoint, trino["access-key"], trino["secret-key"])
-    assert_denied(lambda: sts.assume_role(RoleArn=lakekeeper["role-arn"], RoleSessionName="trino"))
+def test_solo_lakekeeper_asume_el_rol(s3_endpoint, lakekeeper, catalog_backup):
+    sts = client("sts", s3_endpoint, catalog_backup["access-key"], catalog_backup["secret-key"])
+    assert_denied(lambda: sts.assume_role(RoleArn=lakekeeper["role-arn"], RoleSessionName="otro"))
 
 
 def test_credencial_temporal_acotada_a_una_tabla(s3_endpoint, lakekeeper, warehouse, other_bucket, prefix):

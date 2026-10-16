@@ -7,8 +7,9 @@ Infraestructura como código de un lakehouse sobre Kubernetes. Arranca en un nod
 | Carpeta | Qué contiene |
 |---|---|
 | `host/` | Instalación de k3s en el servidor (requiere `sudo`), descarga del kubeconfig y plantilla de `registries.yaml` |
-| `terraform/platform/` | Base del cluster: namespaces, operadores (Strimzi, Spark Operator, CloudNativePG con el plugin barman-cloud, cert-manager) y object store (SeaweedFS) |
-| `terraform/workloads/` | Postgres del catálogo (CloudNativePG) con sus respaldos, Lakekeeper y OpenFGA; después Keycloak, Trino con OPA, Kafka + Debezium, Airflow, OpenMetadata |
+| `terraform/platform/` | Base del cluster: namespaces, operadores (Strimzi, Spark Operator, CloudNativePG con el plugin barman-cloud, cert-manager, Keycloak) y object store (SeaweedFS) |
+| `terraform/workloads/` | CA del lakehouse, Postgres del catálogo (CloudNativePG) con sus respaldos, Lakekeeper y OpenFGA, Keycloak; después Trino con OPA, Kafka + Debezium, Airflow, OpenMetadata |
+| `terraform/identity/` | Contenido de Keycloak: realm `lakehouse`, usuarios y clientes. Se aplica contra la API de Keycloak, no la de Kubernetes |
 | `terraform/envs/<entorno>/` | Variables y estado por entorno. Solo `example/` se versiona |
 | `images/spark/` | Imagen de Spark con Iceberg y OpenLineage, que construye `.github/workflows/spark-image.yml` |
 
@@ -24,6 +25,7 @@ Infraestructura como código de un lakehouse sobre Kubernetes. Arranca en un nod
 | `lakehouse-catalog` | Postgres `catalog-db`, Lakekeeper (catálogo Iceberg REST) y OpenFGA (permisos) |
 | `lakehouse-compute` | Jobs de Spark |
 | `lakehouse-query` | Trino |
+| `lakehouse-identity` | Operador de Keycloak y Keycloak |
 
 ## Dónde corre cada cosa
 
@@ -97,7 +99,17 @@ terraform apply -var-file ../envs/<entorno>/workloads.tfvars
 
 `-reconfigure` hace que cada `init` apunte al estado del entorno indicado; sin él, Terraform intentaría migrar el estado del entorno anterior al nuevo.
 
-### 6. Tests
+### 6. Identidad
+
+`identity` se conecta a Keycloak por su URL pública, así que va después de `workloads` y necesita el NodePort de Keycloak abierto en el firewall del nodo (`install-k3s.sh` lo abre).
+
+```bash
+cd terraform/identity
+terraform init -reconfigure -backend-config=../envs/<entorno>/identity.backend.hcl
+terraform apply -var-file ../envs/<entorno>/identity.tfvars
+```
+
+### 7. Tests
 
 Suite pytest contra el cluster real, un archivo por etapa. Necesita `uv` y `kubectl`:
 
@@ -114,11 +126,30 @@ La prueba de restauración queda fuera de la corrida normal porque tarda unos mi
 
 - Cada namespace tiene una `ResourceQuota` (`namespace_quotas` en `platform.tfvars`; la de `lakehouse-compute` es el tope de Spark) y un `LimitRange` que da requests y límite de memoria por defecto a los contenedores que no los declaran.
 - El catálogo (Postgres, Lakekeeper, OpenFGA) corre con QoS Guaranteed.
-- SeaweedFS tiene una identidad por consumidor: `admin` para operación, y `lakekeeper` y `trino` acotadas al bucket `warehouse`, con sus claves en el Secret `s3-<consumidor>` de su namespace. Solo `lakekeeper` puede asumir el rol `lakekeeper-vended` por STS, y SeaweedFS respeta la política de sesión con que Lakekeeper acota cada credencial temporal a una tabla.
+- SeaweedFS tiene una identidad por consumidor: `admin` para operación, `lakekeeper` acotada al bucket `warehouse` y `catalog-backup` al de respaldos, con sus claves en el Secret `s3-<consumidor>` de su namespace. Solo `lakekeeper` puede asumir el rol `lakekeeper-vended` por STS, y SeaweedFS respeta la política de sesión con que Lakekeeper acota cada credencial temporal a una tabla.
 - Los buckets los crea el Job `seaweedfs-buckets` con la identidad `admin`. El Job `lakekeeper-bootstrap` hace el bootstrap de Lakekeeper con la cuenta de servicio `lakehouse-admin` de `lakehouse-catalog`, que queda como administradora (rol `operator`), y crea el warehouse `lakehouse` con credenciales temporales por STS. Quien pueda crear pods con esa cuenta administra el catálogo.
 - Los jobs de Spark corren en `lakehouse-compute` con la cuenta de servicio `spark-operator-spark`, que el Job `lakekeeper-bootstrap` registra en Lakekeeper con permisos `create` y `modify` sobre el warehouse. El ConfigMap `spark-lakehouse` tiene lo que un `SparkApplication` copia: `image`, `service-account` y `spark-conf.json` (catálogo Iceberg REST con credenciales delegadas). Spark no lleva claves de S3; el job lee el token de su cuenta de servicio y lo fija en `spark.sql.catalog.<catálogo>.token` antes de usar el catálogo (ver `tests/spark/crear_tabla.py`).
 - `catalog-db` archiva su WAL de forma continua y hace un respaldo base diario en el bucket `catalog-backups`, con la identidad `catalog-backup` y retención de 14 días. En un solo nodo el bucket está en el mismo disco: cubre errores humanos y de software, no la pérdida del disco.
 - En `lakehouse-catalog` la entrada está denegada por defecto: Lakekeeper (8181) recibe de los namespaces del lakehouse; OpenFGA solo de Lakekeeper; Postgres de Lakekeeper, OpenFGA y el operador de CloudNativePG.
+
+## Acceso desde fuera del cluster
+
+Keycloak se expone por NodePort en `https://<public_host>:30443`, con la misma URL desde los equipos y desde los pods, para que los tokens tengan un solo emisor. El certificado lo emite la CA del lakehouse (cert-manager, ClusterIssuer `lakehouse-ca`), que los equipos tienen que aceptar. En Windows, sin permisos de administrador:
+
+```powershell
+kubectl --kubeconfig $HOME\.kube\config-<entorno> -n lakehouse-operators get secret lakehouse-ca -o jsonpath='{.data.ca\.crt}' |
+  ForEach-Object { [IO.File]::WriteAllBytes("$HOME\lakehouse-ca.crt", [Convert]::FromBase64String($_)) }
+Import-Certificate -FilePath $HOME\lakehouse-ca.crt -CertStoreLocation Cert:\CurrentUser\Root
+```
+
+- Consola de administración: `https://<public_host>:30443/admin`, usuario `admin`, clave en el Secret `keycloak-bootstrap-admin` de `lakehouse-identity`.
+- Consola de cuenta del realm: `https://<public_host>:30443/realms/lakehouse/account`, usuario `prueba`, clave con `terraform output -raw test_user_password` en `terraform/identity`.
+
+El administrador y el cliente `terraform` del bootstrap son temporales para Keycloak: sirven hasta federar con el proveedor de identidad definitivo.
+
+Trino se expone igual, en `https://<public_host>:30843` (la interfaz web en `/ui/`), con login OAuth2 contra el realm `lakehouse`; el usuario de Trino es el `preferred_username` del token. Trino llega a Lakekeeper con la cuenta de servicio del cliente `trino`, cuyo usuario de Lakekeeper es `oidc~service-account-trino`; el Job de bootstrap le da permisos sobre el warehouse.
+
+Lakekeeper acepta tokens del realm `lakehouse` con audiencia `lakekeeper` (la agrega el scope del mismo nombre) y tokens de cuentas de servicio del cluster. Un usuario o cliente OIDC queda en Lakekeeper como `oidc~<preferred_username>` (el puente OPA de Trino arma el id igual) y se registra con `POST /management/v1/user`; los permisos sobre el warehouse se le dan aparte (`catalog_users` en `workloads.tfvars`, además de Spark y Trino). Los pods que llaman a Keycloak montan el ConfigMap `lakehouse-ca` de su namespace.
 
 ## Estado de Terraform
 

@@ -1,4 +1,5 @@
-# Postgres de metadatos del catálogo: base `lakekeeper` (catálogo Iceberg) y base `openfga` (permisos).
+# Postgres de metadatos del catálogo: base `lakekeeper` (catálogo Iceberg), base `openfga` (permisos) y base
+# `keycloak` (identidad, ver keycloak.tf).
 # Los datos de las tablas viven en el object store, no acá.
 locals {
   catalog_ns    = data.kubernetes_namespace_v1.catalog.metadata[0].name
@@ -80,12 +81,20 @@ resource "kubernetes_manifest" "catalog_db" {
         }
       }
       managed = {
-        roles = [{
-          name           = local.openfga_db
-          ensure         = "present"
-          login          = true
-          passwordSecret = { name = kubernetes_secret_v1.openfga_db_credentials.metadata[0].name }
-        }]
+        roles = [
+          {
+            name           = local.openfga_db
+            ensure         = "present"
+            login          = true
+            passwordSecret = { name = kubernetes_secret_v1.openfga_db_credentials.metadata[0].name }
+          },
+          {
+            name           = local.keycloak_db
+            ensure         = "present"
+            login          = true
+            passwordSecret = { name = kubernetes_secret_v1.keycloak_db_credentials[local.catalog_ns].metadata[0].name }
+          },
+        ]
       }
       # Archiva el WAL al ObjectStore de catalog-backups.tf.
       plugins = [{

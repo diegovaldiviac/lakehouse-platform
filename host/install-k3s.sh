@@ -55,13 +55,18 @@ if [[ -n "$REGISTRIES_FILE" ]]; then
 fi
 
 # Sin las redes de pods y servicios permitidas, el firewall corta el tráfico entre pods.
+# 30443 y 30843 son los NodePort de Keycloak y Trino (keycloak_node_port y trino_node_port en workloads.tfvars).
 if systemctl is-active --quiet firewalld; then
   firewall-cmd --permanent --add-port=6443/tcp
+  firewall-cmd --permanent --add-port=30443/tcp
+  firewall-cmd --permanent --add-port=30843/tcp
   firewall-cmd --permanent --zone=trusted --add-source="$POD_CIDR"
   firewall-cmd --permanent --zone=trusted --add-source="$SERVICE_CIDR"
   firewall-cmd --reload
 elif command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
   ufw allow 6443/tcp
+  ufw allow 30443/tcp
+  ufw allow 30843/tcp
   ufw allow from "$POD_CIDR" to any
   ufw allow from "$SERVICE_CIDR" to any
 fi

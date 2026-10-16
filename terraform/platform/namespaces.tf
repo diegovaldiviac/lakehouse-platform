@@ -6,6 +6,7 @@ locals {
     catalog   = "lakehouse-catalog"
     compute   = "lakehouse-compute"
     query     = "lakehouse-query"
+    identity  = "lakehouse-identity"
   }
 }
 

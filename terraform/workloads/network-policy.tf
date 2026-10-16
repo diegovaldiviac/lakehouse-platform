@@ -1,5 +1,5 @@
 # Entrada al catálogo denegada por defecto. Solo Lakekeeper atiende a otros namespaces del lakehouse;
-# OpenFGA y Postgres solo reciben de Lakekeeper y OpenFGA. El tráfico desde el nodo (probes) no se filtra.
+# OpenFGA solo recibe de Lakekeeper; Postgres, de Lakekeeper, OpenFGA y Keycloak. El tráfico desde el nodo (probes) no se filtra.
 locals {
   lakekeeper_pods = { "app.kubernetes.io/instance" = "lakekeeper", "app.kubernetes.io/name" = "lakekeeper" }
   openfga_pods    = { "app.kubernetes.io/instance" = "lakekeeper", "app.kubernetes.io/name" = "openfga" }
@@ -89,7 +89,7 @@ resource "kubernetes_network_policy_v1" "catalog_db" {
     }
     policy_types = ["Ingress"]
 
-    # Lakekeeper (servidor y Job de migración) y OpenFGA.
+    # Lakekeeper (servidor y Job de migración), OpenFGA y Keycloak.
     ingress {
       from {
         pod_selector {
@@ -99,6 +99,14 @@ resource "kubernetes_network_policy_v1" "catalog_db" {
       from {
         pod_selector {
           match_labels = local.openfga_pods
+        }
+      }
+      from {
+        namespace_selector {
+          match_labels = { "kubernetes.io/metadata.name" = local.identity_ns }
+        }
+        pod_selector {
+          match_labels = local.keycloak_pods
         }
       }
       ports {

@@ -34,7 +34,7 @@ variable "chart_overrides" {
 }
 
 variable "namespace_quotas" {
-  description = "Tope por namespace (claves: operators, storage, ingest, catalog, compute, query). La cuota de compute es el tope de los ejecutores de Spark."
+  description = "Tope por namespace (claves: operators, storage, ingest, catalog, compute, query, identity). La cuota de compute es el tope de los ejecutores de Spark."
   type = map(object({
     cpu    = string
     memory = string

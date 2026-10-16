@@ -21,13 +21,13 @@ variable "kube_context" {
 }
 
 variable "chart_overrides" {
-  description = "URL o ruta local de un .tgz que reemplaza al chart por defecto (espejo interno, red sin GitHub). Claves: lakekeeper."
+  description = "URL o ruta local de un .tgz que reemplaza al chart por defecto (espejo interno, red sin GitHub). Claves: lakekeeper, trino."
   type        = map(string)
   default     = {}
 
   validation {
-    condition     = alltrue([for k in keys(var.chart_overrides) : contains(["lakekeeper"], k)])
-    error_message = "Claves válidas: lakekeeper."
+    condition     = alltrue([for k in keys(var.chart_overrides) : contains(["lakekeeper", "trino"], k)])
+    error_message = "Claves válidas: lakekeeper, trino."
   }
 }
 
@@ -39,6 +39,40 @@ variable "storage_class" {
 variable "catalog_db_size" {
   description = "Tamaño del volumen de Postgres del catálogo."
   type        = string
+}
+
+variable "public_host" {
+  description = "Nombre DNS con que equipos y pods llegan al nodo; va en los certificados y en la URL de Keycloak."
+  type        = string
+}
+
+variable "keycloak_node_port" {
+  description = "NodePort de Keycloak (HTTPS). Tiene que estar abierto en el firewall del nodo."
+  type        = number
+  default     = 30443
+}
+
+variable "trino_node_port" {
+  description = "NodePort de Trino (HTTPS). Tiene que estar abierto en el firewall del nodo."
+  type        = number
+  default     = 30843
+}
+
+variable "kubernetes_token_audience" {
+  description = "Audiencia de los tokens de cuentas de servicio del cluster (en k3s, https://kubernetes.default.svc.cluster.local)."
+  type        = string
+  default     = "https://kubernetes.default.svc.cluster.local"
+}
+
+variable "catalog_users" {
+  description = "Otros clientes OIDC con create y modify sobre el warehouse, nombre => id de Lakekeeper (oidc~<preferred_username>; para una cuenta de servicio de Keycloak, oidc~service-account-<client-id>). Spark y Trino ya están incluidos."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for id in values(var.catalog_users) : can(regex("^oidc~[^\\s=]+$", id))])
+    error_message = "Cada id va como oidc~<preferred_username>, sin espacios ni '='."
+  }
 }
 
 variable "spark_image" {

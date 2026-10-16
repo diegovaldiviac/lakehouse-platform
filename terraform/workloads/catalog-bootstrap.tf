@@ -1,4 +1,4 @@
-# Bootstrap de Lakekeeper, warehouse del lakehouse y permiso de Spark sobre el warehouse. El bootstrap
+# Bootstrap de Lakekeeper, warehouse del lakehouse y permisos de Spark y Trino sobre el warehouse. El bootstrap
 # fija como primer administrador (rol operator) a la cuenta de servicio lakehouse-admin y no se repite
 # sin rehacer la base. El Job se puede volver a correr: salta lo que ya está hecho.
 locals {
@@ -6,6 +6,16 @@ locals {
   curl_image             = "curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777"
   lakekeeper_api         = "http://lakekeeper.${local.catalog_ns}.svc.cluster.local:8181/management/v1"
   lakekeeper_catalog_api = "http://lakekeeper.${local.catalog_ns}.svc.cluster.local:8181/catalog/v1"
+
+  # Usuarios de Lakekeeper con create y modify sobre el warehouse: la cuenta de servicio de Spark, la del
+  # cliente OIDC de Trino (Keycloak la llama service-account-<client-id>) y las de var.catalog_users.
+  catalog_users = merge(
+    {
+      (data.kubernetes_service_account_v1.spark.metadata[0].name) = "kubernetes~${data.kubernetes_service_account_v1.spark.metadata[0].uid}"
+      trino                                                       = "oidc~service-account-${nonsensitive(kubernetes_secret_v1.trino_oidc.data["client-id"])}"
+    },
+    var.catalog_users,
+  )
 
   # Endpoint, bucket, rol y claves vienen del Secret s3-lakekeeper que crea platform.
   s3_lakekeeper_env = {
@@ -74,18 +84,23 @@ resource "kubernetes_job_v1" "lakekeeper_bootstrap" {
             fi
 
             warehouse_id=$(call "$CATALOG_API/config?warehouse=$WAREHOUSE" | grep -o '"prefix":"[^"]*"' | cut -d'"' -f4)
-            call -X POST "$API/user" \
-              -d "{\"id\":\"$SPARK_USER\",\"name\":\"$SPARK_USER_NAME\",\"user-type\":\"application\",\"update-if-exists\":true}"
-            echo
-            # modify no incluye crear namespaces; create sí.
-            for grant in create modify; do
-              if call "$API/permissions/warehouse/$warehouse_id/assignments" | grep -q "\"type\":\"$grant\",\"user\":\"$SPARK_USER\""; then
-                echo "$SPARK_USER_NAME ya tiene $grant en $WAREHOUSE"
-              else
-                call -X POST "$API/permissions/warehouse/$warehouse_id/assignments" \
-                  -d "{\"writes\":[{\"type\":\"$grant\",\"user\":\"$SPARK_USER\"}]}"
-                echo "$SPARK_USER_NAME recibió $grant en $WAREHOUSE"
-              fi
+            # CATALOG_USERS: "nombre=id" separados por espacio.
+            for entry in $CATALOG_USERS; do
+              name=$${entry%%=*}
+              id=$${entry#*=}
+              call -X POST "$API/user" \
+                -d "{\"id\":\"$id\",\"name\":\"$name\",\"user-type\":\"application\",\"update-if-exists\":true}"
+              echo
+              # modify no incluye crear namespaces; create sí.
+              for grant in create modify; do
+                if call "$API/permissions/warehouse/$warehouse_id/assignments" | grep -q "\"type\":\"$grant\",\"user\":\"$id\""; then
+                  echo "$name ya tiene $grant en $WAREHOUSE"
+                else
+                  call -X POST "$API/permissions/warehouse/$warehouse_id/assignments" \
+                    -d "{\"writes\":[{\"type\":\"$grant\",\"user\":\"$id\"}]}"
+                  echo "$name recibió $grant en $WAREHOUSE"
+                fi
+              done
             done
           EOT
           ]
@@ -103,12 +118,8 @@ resource "kubernetes_job_v1" "lakekeeper_bootstrap" {
             value = local.lakekeeper_catalog_api
           }
           env {
-            name  = "SPARK_USER"
-            value = "kubernetes~${data.kubernetes_service_account_v1.spark.metadata[0].uid}"
-          }
-          env {
-            name  = "SPARK_USER_NAME"
-            value = data.kubernetes_service_account_v1.spark.metadata[0].name
+            name  = "CATALOG_USERS"
+            value = join(" ", [for name, id in local.catalog_users : "${name}=${id}"])
           }
 
           dynamic "env" {

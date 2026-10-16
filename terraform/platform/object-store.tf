@@ -28,11 +28,6 @@ locals {
         actions     = ["Read:${local.warehouse_bucket}", "Write:${local.warehouse_bucket}", "List:${local.warehouse_bucket}"]
       },
       {
-        name        = "trino"
-        credentials = [{ accessKey = random_password.s3_key["trino"].result, secretKey = random_password.s3_secret["trino"].result }]
-        actions     = ["Read:${local.warehouse_bucket}", "Write:${local.warehouse_bucket}", "List:${local.warehouse_bucket}"]
-      },
-      {
         # Archiva WAL y respaldos base del Postgres del catálogo, y borra los vencidos.
         name        = "catalog-backup"
         credentials = [{ accessKey = random_password.s3_key["catalog-backup"].result, secretKey = random_password.s3_secret["catalog-backup"].result }]
@@ -75,7 +70,6 @@ locals {
   # Credenciales de cada consumidor, en un Secret de su propio namespace.
   s3_consumers = {
     lakekeeper       = { namespace = kubernetes_namespace_v1.this["catalog"].metadata[0].name, bucket = local.warehouse_bucket }
-    trino            = { namespace = kubernetes_namespace_v1.this["query"].metadata[0].name, bucket = local.warehouse_bucket }
     "catalog-backup" = { namespace = kubernetes_namespace_v1.this["catalog"].metadata[0].name, bucket = local.backups_bucket }
   }
 }

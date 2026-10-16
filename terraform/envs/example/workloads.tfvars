@@ -5,6 +5,14 @@ environment = "example"
 storage_class   = "local-path"
 catalog_db_size = "10Gi"
 
+# Nombre DNS del nodo, el mismo desde los equipos y desde los pods. Keycloak queda en https://<public_host>:30443.
+public_host = "<servidor>.<dominio>"
+
+# Otros clientes OIDC con permisos sobre el warehouse; Spark y Trino ya los tienen.
+# catalog_users = {
+#   ingesta = "oidc~service-account-<client-id>"
+# }
+
 # La que publica .github/workflows/spark-image.yml, por digest.
 spark_image = "ghcr.io/<owner>/<repo>/spark@sha256:<digest>"
 

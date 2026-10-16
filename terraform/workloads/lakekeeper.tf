@@ -54,6 +54,15 @@ resource "helm_release" "lakekeeper" {
       resources      = local.guaranteed.server
       initContainers = { checkDb = { resources = local.guaranteed.small } }
       dbMigrations   = { resources = { requests = { cpu = "250m", memory = "256Mi" }, limits = { memory = "256Mi" } } }
+
+      extraEnv = [
+        # Para validar los tokens de Keycloak, que se sirve con la CA del lakehouse.
+        { name = "SSL_CERT_FILE", value = "/etc/lakehouse-ca/ca.crt" },
+        # Usuarios OIDC como oidc~<usuario>: el puente OPA arma el id con el usuario de Trino, que es este claim.
+        { name = "LAKEKEEPER__OPENID_SUBJECT_CLAIM", value = "preferred_username" },
+      ]
+      extraVolumes      = [{ name = "lakehouse-ca", configMap = { name = kubernetes_config_map_v1.lakehouse_ca[local.catalog_ns].metadata[0].name } }]
+      extraVolumeMounts = [{ name = "lakehouse-ca", mountPath = "/etc/lakehouse-ca", readOnly = true }]
     }
 
     postgresql = { enabled = false }
@@ -78,11 +87,16 @@ resource "helm_release" "lakekeeper" {
       }
     }
 
-    # Cuentas de servicio de Kubernetes como identidad hasta tener el proveedor OIDC (Entra ID o Keycloak);
-    # los dos métodos conviven, así que agregar OIDC después no obliga a rehacer nada.
+    # Usuarios y clientes OIDC de Keycloak (audiencia "lakekeeper", que agrega el scope del mismo nombre en
+    # el realm) y cuentas de servicio de Kubernetes para los jobs del cluster.
     auth = {
+      oauth2 = {
+        providerUri = local.oidc_issuer
+        audience    = "lakekeeper"
+      }
       k8s = {
         enabled                  = true
+        audience                 = var.kubernetes_token_audience
         createClusterRoleBinding = true
       }
     }
@@ -107,5 +121,5 @@ resource "helm_release" "lakekeeper" {
     }
   })]
 
-  depends_on = [kubernetes_manifest.openfga_database]
+  depends_on = [kubernetes_manifest.openfga_database, kubernetes_manifest.keycloak]
 }

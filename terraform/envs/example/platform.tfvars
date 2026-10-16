@@ -13,6 +13,7 @@ namespace_quotas = {
   catalog   = { cpu = "3", memory = "4Gi" }
   compute   = { cpu = "4", memory = "12Gi" }
   query     = { cpu = "2", memory = "4Gi" }
+  identity  = { cpu = "1", memory = "2Gi" }
 }
 
 # Solo si el kubeconfig no sigue la convención ~/.kube/config-<entorno> con contexto <entorno>.
